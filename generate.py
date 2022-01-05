@@ -17,6 +17,8 @@ import dnnlib
 import numpy as np
 import PIL.Image
 import torch
+import pandas as pd
+import cv2
 
 import legacy
 
@@ -112,13 +114,44 @@ def generate_images(
         if class_idx is not None:
             print ('warn: --class=lbl ignored when running on an unconditional network')
 
+    train_df = pd.DataFrame(columns = ["image", "target", "kfold"])
+
+    counter_fold_0 = 0
+    counter_fold_1 = 0
+    counter_fold_2 = 0
+    print("class_idx: ", class_idx)
     # Generate images.
     for seed_idx, seed in enumerate(seeds):
         print('Generating image for seed %d (%d/%d) ...' % (seed, seed_idx, len(seeds)))
+        #print("Label: ", label) # it is in a one hot encoded format --> class 0 means: [1, 0], class 1 means: [0, 1]
+
+        img_name = f'seed{seed:04d}.png'
+        train_df = train_df.append({"image" : img_name}, ignore_index=True)
+        train_df.loc[train_df["image"]== img_name, "target"] = class_idx
+
+        if seed_idx <= len(seeds)/3:
+            train_df.loc[train_df["image"]== img_name, "kfold"] = 0
+            counter_fold_0 += 1
+        if seed_idx > len(seeds)/3 and seed_idx <= (2*len(seeds))/3:
+            train_df.loc[train_df["image"]== img_name, "kfold"] = 1
+            counter_fold_1 += 1
+        if seed_idx > (2*len(seeds))/3:
+            train_df.loc[train_df["image"]== img_name, "kfold"] = 2
+            counter_fold_2 += 1
+        
         z = torch.from_numpy(np.random.RandomState(seed).randn(1, G.z_dim)).to(device)
         img = G(z, label, truncation_psi=truncation_psi, noise_mode=noise_mode)
         img = (img.permute(0, 2, 3, 1) * 127.5 + 128).clamp(0, 255).to(torch.uint8)
-        PIL.Image.fromarray(img[0].cpu().numpy(), 'RGB').save(f'{outdir}/seed{seed:04d}.png')
+        img = img[0].cpu().numpy()
+        img = img.reshape((len(img[0]), len(img[1])))
+        img = cv2.resize(img, dsize=(260,260))
+        PIL.Image.fromarray(img, 'L').save(f'{outdir}/images/{img_name}')
+
+        train_df.to_csv(os.path.join(outdir, f'train_{class_idx}.csv'), index=False, header=True)
+
+    print(counter_fold_0)
+    print(counter_fold_1)
+    print(counter_fold_2)
 
 
 #----------------------------------------------------------------------------
