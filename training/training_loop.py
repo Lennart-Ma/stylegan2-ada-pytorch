@@ -16,6 +16,7 @@ import PIL.Image
 import numpy as np
 import torch
 import dnnlib
+import pandas as pd
 from torch_utils import misc
 from torch_utils import training_stats
 from torch_utils.ops import conv2d_gradfix
@@ -23,6 +24,7 @@ from torch_utils.ops import grid_sample_gradfix
 
 import legacy
 from metrics import metric_main
+from metrics import metric_extended
 
 #----------------------------------------------------------------------------
 
@@ -119,6 +121,46 @@ def training_loop(
     abort_fn                = None,     # Callback function for determining whether to abort training. Must return consistent results across ranks.
     progress_fn             = None,     # Callback function for updating training progress. Called for all ranks.
 ):
+    # Print out information - edited by Lennart M.
+    # print()
+    # print("information about dataset and dataloader: ")
+    # print("training set kwargs: ")
+    # print(training_set_kwargs)
+    # print()
+    # print("data loader kwargs: ")
+    # print(data_loader_kwargs)
+    # print()
+    # print()
+    # print("information about the network: ")
+    # print("G_kwargs")
+    # print(G_kwargs)
+    # print()
+    # print("D_kwargs")
+    # print(D_kwargs)
+    # print()
+    # print()
+    print("information about the augmentation: ")
+    print("augment kwargs: ")
+    print(augment_kwargs)
+    print()
+    print("augment_p: ")
+    print(augment_p)
+    print()
+    print("ada_target: ")
+    print(ada_target)
+    print()
+    print("ada_interval")
+    print(ada_interval)
+    print()
+    print("ada_kimg")
+    print(ada_kimg)
+    # print()
+    # print()
+    # print("Information about loss and optimizer")
+    # print()
+    
+    
+    
     # Initialize.
     start_time = time.time()
     device = torch.device('cuda', rank)
@@ -160,11 +202,15 @@ def training_loop(
             misc.copy_params_and_buffers(resume_data[name], module, require_all=False)
 
     # Print network summary tables.
+    print()
+    print("In this section the network architecture is printed")
     if rank == 0:
         z = torch.empty([batch_gpu, G.z_dim], device=device)
         c = torch.empty([batch_gpu, G.c_dim], device=device)
         img = misc.print_module_summary(G, [z, c])
         misc.print_module_summary(D, [img, c])
+    print()
+    print("End of the network architecture section")
 
     # Setup augmentation.
     if rank == 0:
@@ -176,6 +222,17 @@ def training_loop(
         augment_pipe.p.copy_(torch.as_tensor(augment_p))
         if ada_target is not None:
             ada_stats = training_stats.Collector(regex='Loss/signs/real')
+
+    print()
+    print()
+    print("Information about augmentation: ")
+    print("ada_stats: ")
+    print(ada_stats)
+    print()
+    print("augment pipe: ")
+    for name, module in [('augment_pipe', augment_pipe)]:
+        print("name: ", name)
+        print("module: ", module)
 
     # Distribute across GPUs.
     if rank == 0:
@@ -213,6 +270,7 @@ def training_loop(
             phase.start_event = torch.cuda.Event(enable_timing=True)
             phase.end_event = torch.cuda.Event(enable_timing=True)
 
+
     # Export sample images.
     grid_size = None
     grid_z = None
@@ -240,6 +298,11 @@ def training_loop(
             stats_tfevents = tensorboard.SummaryWriter(run_dir)
         except ImportError as err:
             print('Skipping tfevents export:', err)
+
+
+    # Added by me --> set up a dataframe to save the metrics
+
+    metric_df = pd.DataFrame(columns=["cur_nimg", "SSIM mean", "SSIM std", "JS", "fid50k_full", "kid50k_full"])
 
     # Train.
     if rank == 0:
@@ -370,12 +433,39 @@ def training_loop(
         if (snapshot_data is not None) and (len(metrics) > 0):
             if rank == 0:
                 print('Evaluating metrics...')
+
+                metric_df = metric_df.append({"cur_nimg" : cur_nimg}, ignore_index=True)
+                print("Calculate SSIM..")
+                ssim_mean, ssim_std = metric_extended.get_ssim(G=snapshot_data['G_ema'], dataset_kwargs=training_set_kwargs,
+                    num_gpus=num_gpus, rank=rank, device=device)
+                metric_df.loc[metric_df["cur_nimg"]== cur_nimg, "SSIM mean"] = ssim_mean
+                metric_df.loc[metric_df["cur_nimg"]== cur_nimg, "SSIM std"] = ssim_std
+                print("SSIM mean: ", ssim_mean, ", SSIM std: ", ssim_std)
+                print("Plot the histogram..")
+                metric_extended.plot_hist(run_dir=run_dir,cur_nimg=cur_nimg, G=snapshot_data['G_ema'], dataset_kwargs=training_set_kwargs,
+                    num_gpus=num_gpus, rank=rank, device=device)
+                
+                print()
+                print("Calculate JS divergence..")
+                js_div = metric_extended.get_JS_divergence(G=snapshot_data['G_ema'], dataset_kwargs=training_set_kwargs,
+                    num_gpus=num_gpus, rank=rank, device=device)
+                print("JS Divergence value: ", js_div)
+                metric_df.loc[metric_df["cur_nimg"]== cur_nimg, "JS"] = js_div
+                
             for metric in metrics:
+
                 result_dict = metric_main.calc_metric(metric=metric, G=snapshot_data['G_ema'],
                     dataset_kwargs=training_set_kwargs, num_gpus=num_gpus, rank=rank, device=device)
+                
+                for key in result_dict["results"]:
+                    metric_df.loc[metric_df["cur_nimg"]== cur_nimg, key] = result_dict["results"][key]
+
                 if rank == 0:
                     metric_main.report_metric(result_dict, run_dir=run_dir, snapshot_pkl=snapshot_pkl)
                 stats_metrics.update(result_dict.results)
+            
+            metric_df.to_csv(os.path.join(run_dir, 'metrics.csv'), index=False)
+            
         del snapshot_data # conserve memory
 
         # Collect statistics.

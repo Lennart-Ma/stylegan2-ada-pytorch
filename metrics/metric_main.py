@@ -43,6 +43,8 @@ def calc_metric(metric, **kwargs): # See metric_utils.MetricOptions for the full
     # Calculate.
     start_time = time.time()
     results = _metric_dict[metric](opts)
+    print("type results:", type(results))
+    print("results: ", results)
     total_time = time.time() - start_time
 
     # Broadcast results.
@@ -71,6 +73,7 @@ def report_metric(result_dict, run_dir=None, snapshot_pkl=None):
         snapshot_pkl = os.path.relpath(snapshot_pkl, run_dir)
 
     jsonl_line = json.dumps(dict(result_dict, snapshot_pkl=snapshot_pkl, timestamp=time.time()))
+    print("json line gets printed from metric_main.py inside report_metric() function")
     print(jsonl_line)
     if run_dir is not None and os.path.isdir(run_dir):
         with open(os.path.join(run_dir, f'metric-{metric}.jsonl'), 'at') as f:
